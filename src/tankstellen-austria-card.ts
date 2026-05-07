@@ -150,9 +150,28 @@ export class TankstellenAustriaCard extends LitElement {
   private _initDone = false;
   private _historyInterval: number | undefined;
   private _cooldownInterval: number | undefined;
+  // Manual-refresh post-fetch check (3s after the update_entity calls) and
+  // the reduce-motion cooldown wake-up are one-shot setTimeouts. Stored on
+  // the instance so disconnectedCallback can cancel them — otherwise a
+  // dashboard edit-mode flip leaves a pending callback that fires against
+  // a detached element and writes to a now-unobserved reactive prop.
+  private _postRefreshTimeout: number | undefined;
+  private _cooldownTimeout: number | undefined;
   private _sparklineCleanup: (() => void) | undefined;
 
   public setConfig(config: TankstellenAustriaCardConfig): void {
+    if (!config || typeof config !== "object" || Array.isArray(config)) {
+      throw new Error("tankstellen-austria-card: config must be an object");
+    }
+    // entities is optional (auto-discovery fallback), but if provided it
+    // must be a string or string[] — silently dropping a typo'd shape
+    // hides the misconfiguration behind the empty-state.
+    const ent = (config as Record<string, unknown>).entities;
+    if (ent !== undefined && typeof ent !== "string" && !Array.isArray(ent)) {
+      throw new Error(
+        "tankstellen-austria-card: config.entities must be a string or array of entity IDs",
+      );
+    }
     this._config = normaliseConfig(config);
   }
 
@@ -180,7 +199,7 @@ export class TankstellenAustriaCard extends LitElement {
   // version-mismatch discovery, cooldown tick, or a tracked-entity state
   // object reference change. Without this gate the card re-renders on every
   // entity state change anywhere in the HA install.
-  protected shouldUpdate(changed: PropertyValues): boolean {
+  protected override shouldUpdate(changed: PropertyValues): boolean {
     if (!this._config) return false;
     if (
       changed.has("_config") ||
@@ -236,7 +255,7 @@ export class TankstellenAustriaCard extends LitElement {
 
   // --- Lifecycle ---
 
-  public disconnectedCallback(): void {
+  public override disconnectedCallback(): void {
     super.disconnectedCallback();
     if (this._historyInterval !== undefined) {
       clearInterval(this._historyInterval);
@@ -245,6 +264,14 @@ export class TankstellenAustriaCard extends LitElement {
     if (this._cooldownInterval !== undefined) {
       clearInterval(this._cooldownInterval);
       this._cooldownInterval = undefined;
+    }
+    if (this._postRefreshTimeout !== undefined) {
+      clearTimeout(this._postRefreshTimeout);
+      this._postRefreshTimeout = undefined;
+    }
+    if (this._cooldownTimeout !== undefined) {
+      clearTimeout(this._cooldownTimeout);
+      this._cooldownTimeout = undefined;
     }
     if (this._sparklineCleanup) {
       this._sparklineCleanup();
@@ -255,7 +282,7 @@ export class TankstellenAustriaCard extends LitElement {
     this._initDone = false;
   }
 
-  protected updated(_changed: PropertyValues): void {
+  protected override updated(_changed: PropertyValues): void {
     // One-shot bootstrap on first hass arrival.
     if (!this._initDone && this.hass && this._config) {
       this._initDone = true;
@@ -326,7 +353,7 @@ export class TankstellenAustriaCard extends LitElement {
 
   // --- Render ---
 
-  protected render(): TemplateResult {
+  protected override render(): TemplateResult {
     if (!this.hass || !this._config) {
       return html`
         <ha-card>
@@ -1199,7 +1226,11 @@ export class TankstellenAustriaCard extends LitElement {
     }
 
     // After HA has had time to fetch, check if data actually changed.
-    window.setTimeout(() => {
+    if (this._postRefreshTimeout !== undefined) {
+      clearTimeout(this._postRefreshTimeout);
+    }
+    this._postRefreshTimeout = window.setTimeout(() => {
+      this._postRefreshTimeout = undefined;
       try {
         const updated = this._resolveEntities();
         const updatedActive = updated[this._activeTab] ?? updated[0];
@@ -1223,7 +1254,11 @@ export class TankstellenAustriaCard extends LitElement {
       typeof window.matchMedia === "function" &&
       window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     if (reduceMotion) {
-      window.setTimeout(() => {
+      if (this._cooldownTimeout !== undefined) {
+        clearTimeout(this._cooldownTimeout);
+      }
+      this._cooldownTimeout = window.setTimeout(() => {
+        this._cooldownTimeout = undefined;
         this._cooldownTick = (this._cooldownTick + 1) % 1_000_000;
       }, DYNAMIC_MANUAL_COOLDOWN_MS);
     } else {
@@ -1256,5 +1291,5 @@ export class TankstellenAustriaCard extends LitElement {
     await reloadAfterCacheWipe();
   };
 
-  static styles: CSSResultGroup = cardStyles;
+  static override styles: CSSResultGroup = cardStyles;
 }

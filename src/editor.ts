@@ -93,7 +93,7 @@ export class TankstellenAustriaCardEditor
     this._config = { ...config };
   }
 
-  public disconnectedCallback(): void {
+  public override disconnectedCallback(): void {
     super.disconnectedCallback();
     if (this._copiedTimeout !== undefined) {
       clearTimeout(this._copiedTimeout);
@@ -291,14 +291,13 @@ export class TankstellenAustriaCardEditor
   // Render
   // ------------------------------------------------------------------
 
-  protected render(): TemplateResult {
-    if (!this.hass) {
-      // ha-form needs hass to translate field labels; render nothing
-      // until it lands. setConfig already populated _config with a
-      // minimal value so we don't need to gate on it.
-      return html`<div class="editor"></div>`;
-    }
-
+  protected override render(): TemplateResult {
+    // Don't gate the whole render on `!this.hass` — if HA's hass property
+    // arrives a tick after setConfig (which happens routinely when
+    // Lovelace's _fetchConfig promise chain is disrupted) the editor would
+    // be stuck on the empty placeholder. ha-form re-renders when hass
+    // becomes truthy, and the bespoke sections below already gate on hass
+    // internally before dereferencing states.
     const showHistory = this._config.show_history !== false;
     const showBestRefuel = this._config.show_best_refuel !== false;
     const showRecorderHint = showHistory && showBestRefuel;
@@ -781,7 +780,14 @@ export class TankstellenAustriaCardEditor
       }
     } else if (field === "tank_size") {
       const parsed = parseInt(raw, 10);
-      next.tank_size = Math.max(1, Number.isFinite(parsed) ? parsed : 1);
+      // Clamp on both sides so the stored value never drifts outside the
+      // 1..200 contract enforced by `utils/config.ts` and the aria-invalid
+      // threshold in `_renderCarRow`. Lower-only clamping let users save
+      // an out-of-range value that the UI then flagged invalid forever.
+      next.tank_size = Math.min(
+        200,
+        Math.max(1, Number.isFinite(parsed) ? parsed : 1),
+      );
     } else if (field === "fuel_type") {
       const allowed: readonly FuelType[] = ["DIE", "SUP", "GAS"];
       if (allowed.includes(raw as FuelType)) {
@@ -819,5 +825,5 @@ export class TankstellenAustriaCardEditor
     this._fireChanged();
   }
 
-  static styles: CSSResultGroup = editorStyles;
+  static override styles: CSSResultGroup = editorStyles;
 }
